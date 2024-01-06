@@ -130,22 +130,21 @@ def renew_vae_attention_paths(old_list, n_shave_prefix_segments=0):
         new_item = new_item.replace("norm.weight", "group_norm.weight")
         new_item = new_item.replace("norm.bias", "group_norm.bias")
 
-        new_item = new_item.replace("q.weight", "query.weight")
-        new_item = new_item.replace("q.bias", "query.bias")
+        new_item = new_item.replace("q.weight", "to_q.weight")
+        new_item = new_item.replace("q.bias", "to_q.bias")
 
-        new_item = new_item.replace("k.weight", "key.weight")
-        new_item = new_item.replace("k.bias", "key.bias")
+        new_item = new_item.replace("k.weight", "to_k.weight")
+        new_item = new_item.replace("k.bias", "to_k.bias")
 
-        new_item = new_item.replace("v.weight", "value.weight")
-        new_item = new_item.replace("v.bias", "value.bias")
+        new_item = new_item.replace("v.weight", "to_v.weight")
+        new_item = new_item.replace("v.bias", "to_v.bias")
 
-        new_item = new_item.replace("proj_out.weight", "proj_attn.weight")
-        new_item = new_item.replace("proj_out.bias", "proj_attn.bias")
+        new_item = new_item.replace("proj_out.weight", "to_out.0.weight")
+        new_item = new_item.replace("proj_out.bias", "to_out.0.bias")
 
         new_item = shave_segments(new_item, n_shave_prefix_segments=n_shave_prefix_segments)
 
         mapping.append({"old": old_item, "new": new_item})
-
     return mapping
 
 
@@ -196,6 +195,10 @@ def assign_to_checkpoint(
         # proj_attn.weight has to be converted from conv 1D to linear
         if "proj_attn.weight" in new_path:
             checkpoint[new_path] = old_checkpoint[path["old"]][:, :, 0]
+        elif 'to_out.0.weight' in new_path:
+            checkpoint[new_path] = old_checkpoint[path['old']].squeeze()
+        elif any([qkv in new_path for qkv in ['to_q', 'to_k', 'to_v']]):
+            checkpoint[new_path] = old_checkpoint[path['old']].squeeze()
         else:
             checkpoint[new_path] = old_checkpoint[path["old"]]
 
@@ -556,7 +559,7 @@ def convert_ldm_unet_checkpoint(checkpoint, config, path=None, extract_ema=False
     return new_checkpoint
 
 
-def convert_ldm_vae_checkpoint(checkpoint, config):
+def convert_ldm_vae_checkpoint(checkpoint, config, only_decoder=False, only_encoder=False):
     # extract state dict for VAE
     vae_state_dict = {}
     vae_key = "first_stage_model."
@@ -660,6 +663,12 @@ def convert_ldm_vae_checkpoint(checkpoint, config):
     meta_path = {"old": "mid.attn_1", "new": "mid_block.attentions.0"}
     assign_to_checkpoint(paths, new_checkpoint, vae_state_dict, additional_replacements=[meta_path], config=config)
     conv_attn_to_linear(new_checkpoint)
+
+    if only_decoder:
+        new_checkpoint = {k: v for k, v in new_checkpoint.items() if k.startswith('decoder') or k.startswith('post_quant')}
+    elif only_encoder:
+        new_checkpoint = {k: v for k, v in new_checkpoint.items() if k.startswith('encoder') or k.startswith('quant')}
+
     return new_checkpoint
 
 
@@ -714,18 +723,14 @@ def convert_ldm_bert_checkpoint(checkpoint, config):
 
 
 def convert_ldm_clip_checkpoint(checkpoint):
-    text_model = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14")
     keys = list(checkpoint.keys())
 
     text_model_dict = {}
-
     for key in keys:
         if key.startswith("cond_stage_model.transformer"):
             text_model_dict[key[len("cond_stage_model.transformer.") :]] = checkpoint[key]
 
-    text_model.load_state_dict(text_model_dict)
-
-    return text_model
+    return text_model_dict
 
 
 textenc_conversion_lst = [

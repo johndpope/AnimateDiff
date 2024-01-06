@@ -3,14 +3,20 @@
 import inspect
 from typing import Callable, List, Optional, Union
 from dataclasses import dataclass
+import random
+import argparse
 
 import numpy as np
 import torch
 from tqdm import tqdm
+from omegaconf import OmegaConf
 
 from diffusers.utils import is_accelerate_available
 from packaging import version
 from transformers import CLIPTextModel, CLIPTokenizer
+
+import os
+from safetensors import safe_open
 
 from diffusers.configuration_utils import FrozenDict
 from diffusers.models import AutoencoderKL
@@ -27,7 +33,44 @@ from diffusers.utils import deprecate, logging, BaseOutput
 
 from einops import rearrange
 
-from ..models.unet import UNet3DConditionModel
+from animatediff.models.unet import UNet3DConditionModel
+
+from animatediff.utils.convert_from_ckpt import convert_ldm_unet_checkpoint, convert_ldm_clip_checkpoint, convert_ldm_vae_checkpoint
+from animatediff.utils.convert_lora_safetensor_to_diffusers import convert_lora
+
+from animatediff.utils.util import prepare_mask_coef, save_videos_grid
+from animatediff.models.resnet import InflatedConv3d
+
+from PIL import Image
+
+PIL_INTERPOLATION = {
+        "linear": Image.Resampling.BILINEAR,
+        "bilinear": Image.Resampling.BILINEAR,
+        "bicubic": Image.Resampling.BICUBIC,
+        "lanczos": Image.Resampling.LANCZOS,
+        "nearest": Image.Resampling.NEAREST,
+    }
+def preprocess_image(image):
+    if isinstance(image, torch.Tensor):
+        return image
+    elif isinstance(image, Image.Image):
+        image = [image]
+
+    if isinstance(image[0], Image.Image):
+        w, h = image[0].size
+        w, h = map(lambda x: x - x % 8, (w, h))  # resize to integer multiple of 8
+
+        image = [np.array(i.resize((w, h), resample=PIL_INTERPOLATION["lanczos"]))[None, :] for i in image]
+        image = np.concatenate(image, axis=0)
+        if len(image.shape) == 3:
+            image = image.reshape(image.shape[0], image.shape[1], image.shape[2], 1)
+        image = np.array(image).astype(np.float32) / 255.0
+        image = image.transpose(0, 3, 1, 2)
+        image = 2.0 * image - 1.0
+        image = torch.from_numpy(image)
+    elif isinstance(image[0], torch.Tensor):
+        image = torch.cat(image, dim=0)
+    return image
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -38,7 +81,7 @@ class AnimationPipelineOutput(BaseOutput):
     videos: Union[torch.Tensor, np.ndarray]
 
 
-class AnimationPipeline(DiffusionPipeline):
+class ValidationPipeline(DiffusionPipeline):
     _optional_components = []
 
     def __init__(
@@ -285,6 +328,7 @@ class AnimationPipeline(DiffusionPipeline):
 
     def prepare_latents(self, batch_size, num_channels_latents, video_length, height, width, dtype, device, generator, latents=None):
         shape = (batch_size, num_channels_latents, video_length, height // self.vae_scale_factor, width // self.vae_scale_factor)
+
         if isinstance(generator, list) and len(generator) != batch_size:
             raise ValueError(
                 f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
@@ -316,6 +360,7 @@ class AnimationPipeline(DiffusionPipeline):
     def __call__(
         self,
         prompt: Union[str, List[str]],
+        use_image: bool,
         video_length: Optional[int],
         height: Optional[int] = None,
         width: Optional[int] = None,
@@ -380,21 +425,58 @@ class AnimationPipeline(DiffusionPipeline):
         )
         latents_dtype = latents.dtype
 
+        if use_image != False:
+            shape = (batch_size, num_channels_latents, video_length, height // self.vae_scale_factor, width // self.vae_scale_factor)
+
+            image = Image.open(f'test_image/init_image{use_image}.png').convert('RGB')
+            image = preprocess_image(image).to(device)
+            if isinstance(generator, list):
+                image_latent = [
+                    self.vae.encode(image[k : k + 1]).latent_dist.sample(generator[k]) for k in range(batch_size)
+                ]
+                image_latent = torch.cat(image_latent, dim=0).to(device=device)
+            else:
+                image_latent = self.vae.encode(image).latent_dist.sample(generator).to(device=device)
+
+            image_latent         = torch.nn.functional.interpolate(image_latent, size=[shape[-2], shape[-1]])
+            image_latent_padding = image_latent.clone() * 0.18215
+            mask                 = torch.zeros((shape[0], 1, shape[2], shape[3], shape[4])).to(device)
+            mask_coef            = prepare_mask_coef(video_length, 0, kwargs['mask_sim_range'])
+
+            add_noise = torch.randn(shape).to(device)
+            masked_image = torch.zeros(shape).to(device)
+            for f in range(video_length):
+                mask[:,:,f,:,:]         = mask_coef[f]
+                masked_image[:,:,f,:,:] = image_latent_padding.clone()
+            mask         = mask.to(device)
+        else:
+            shape = (batch_size, num_channels_latents, video_length, height // self.vae_scale_factor, width // self.vae_scale_factor)
+            add_noise    = torch.zeros_like(latents).to(device)
+            masked_image = add_noise
+            mask         = torch.zeros((shape[0], 1, shape[2], shape[3], shape[4])).to(device)
+
         # Prepare extra step kwargs.
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
-
+        mask = torch.cat([mask] * 2) if do_classifier_free_guidance else mask
+        masked_image = torch.cat([masked_image] * 2) if do_classifier_free_guidance else masked_image
         # Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
-
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
                 # predict the noise residual
-                noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample.to(dtype=latents_dtype)
-               
+                noise_pred = self.unet(latent_model_input, mask, masked_image, t, encoder_hidden_states=text_embeddings).sample.to(dtype=latents_dtype)
+                # noise_pred = []
+                # import pdb
+                # pdb.set_trace()
+                # for batch_idx in range(latent_model_input.shape[0]):
+                #     noise_pred_single = self.unet(latent_model_input[batch_idx:batch_idx+1], t, encoder_hidden_states=text_embeddings[batch_idx:batch_idx+1]).sample.to(dtype=latents_dtype)
+                #     noise_pred.append(noise_pred_single)
+                # noise_pred = torch.cat(noise_pred)
+
                 # perform guidance
                 if do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
