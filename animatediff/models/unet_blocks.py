@@ -1,4 +1,4 @@
-# Adapted from https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/unet_2d_blocks.py
+# Adapted from https://github.com/guoyww/AnimateDiff
 
 import torch
 from torch import nn
@@ -28,10 +28,9 @@ def get_down_block(
     upcast_attention=False,
     resnet_time_scale_shift="default",
     
-    unet_use_cross_frame_attention=False,
-    unet_use_temporal_attention=False,
-    use_inflated_groupnorm=False,
-
+    unet_use_cross_frame_attention=None,
+    unet_use_temporal_attention=None,
+    
     use_motion_module=None,
     
     motion_module_type=None,
@@ -50,8 +49,6 @@ def get_down_block(
             resnet_groups=resnet_groups,
             downsample_padding=downsample_padding,
             resnet_time_scale_shift=resnet_time_scale_shift,
-
-            use_inflated_groupnorm=use_inflated_groupnorm,
 
             use_motion_module=use_motion_module,
             motion_module_type=motion_module_type,
@@ -80,7 +77,6 @@ def get_down_block(
 
             unet_use_cross_frame_attention=unet_use_cross_frame_attention,
             unet_use_temporal_attention=unet_use_temporal_attention,
-            use_inflated_groupnorm=use_inflated_groupnorm,
             
             use_motion_module=use_motion_module,
             motion_module_type=motion_module_type,
@@ -108,9 +104,8 @@ def get_up_block(
     upcast_attention=False,
     resnet_time_scale_shift="default",
 
-    unet_use_cross_frame_attention=False,
-    unet_use_temporal_attention=False,
-    use_inflated_groupnorm=False,
+    unet_use_cross_frame_attention=None,
+    unet_use_temporal_attention=None,
     
     use_motion_module=None,
     motion_module_type=None,
@@ -129,8 +124,6 @@ def get_up_block(
             resnet_act_fn=resnet_act_fn,
             resnet_groups=resnet_groups,
             resnet_time_scale_shift=resnet_time_scale_shift,
-
-            use_inflated_groupnorm=use_inflated_groupnorm,
 
             use_motion_module=use_motion_module,
             motion_module_type=motion_module_type,
@@ -159,7 +152,6 @@ def get_up_block(
 
             unet_use_cross_frame_attention=unet_use_cross_frame_attention,
             unet_use_temporal_attention=unet_use_temporal_attention,
-            use_inflated_groupnorm=use_inflated_groupnorm,
 
             use_motion_module=use_motion_module,
             motion_module_type=motion_module_type,
@@ -187,9 +179,8 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         use_linear_projection=False,
         upcast_attention=False,
 
-        unet_use_cross_frame_attention=False,
-        unet_use_temporal_attention=False,
-        use_inflated_groupnorm=False,
+        unet_use_cross_frame_attention=None,
+        unet_use_temporal_attention=None,
 
         use_motion_module=None,
         
@@ -215,8 +206,6 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                 non_linearity=resnet_act_fn,
                 output_scale_factor=output_scale_factor,
                 pre_norm=resnet_pre_norm,
-
-                use_inflated_groupnorm=use_inflated_groupnorm,
             )
         ]
         attentions = []
@@ -259,8 +248,6 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
-
-                    use_inflated_groupnorm=use_inflated_groupnorm,
                 )
             )
 
@@ -301,9 +288,8 @@ class CrossAttnDownBlock3D(nn.Module):
         only_cross_attention=False,
         upcast_attention=False,
 
-        unet_use_cross_frame_attention=False,
-        unet_use_temporal_attention=False,
-        use_inflated_groupnorm=False,
+        unet_use_cross_frame_attention=None,
+        unet_use_temporal_attention=None,
         
         use_motion_module=None,
 
@@ -332,8 +318,6 @@ class CrossAttnDownBlock3D(nn.Module):
                     non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
-
-                    use_inflated_groupnorm=use_inflated_groupnorm,
                 )
             )
             if dual_cross_attention:
@@ -437,8 +421,6 @@ class DownBlock3D(nn.Module):
         output_scale_factor=1.0,
         add_downsample=True,
         downsample_padding=1,
-
-        use_inflated_groupnorm=False,
         
         use_motion_module=None,
         motion_module_type=None,
@@ -462,8 +444,6 @@ class DownBlock3D(nn.Module):
                     non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
-
-                    use_inflated_groupnorm=use_inflated_groupnorm,
                 )
             )
             motion_modules.append(
@@ -544,9 +524,8 @@ class CrossAttnUpBlock3D(nn.Module):
         only_cross_attention=False,
         upcast_attention=False,
 
-        unet_use_cross_frame_attention=False,
-        unet_use_temporal_attention=False,
-        use_inflated_groupnorm=False,
+        unet_use_cross_frame_attention=None,
+        unet_use_temporal_attention=None,
         
         use_motion_module=None,
 
@@ -577,8 +556,6 @@ class CrossAttnUpBlock3D(nn.Module):
                     non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
-
-                    use_inflated_groupnorm=use_inflated_groupnorm,
                 )
             )
             if dual_cross_attention:
@@ -684,8 +661,6 @@ class UpBlock3D(nn.Module):
         output_scale_factor=1.0,
         add_upsample=True,
 
-        use_inflated_groupnorm=False,
-
         use_motion_module=None,
         motion_module_type=None,
         motion_module_kwargs=None,
@@ -710,8 +685,6 @@ class UpBlock3D(nn.Module):
                     non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
-
-                    use_inflated_groupnorm=use_inflated_groupnorm,
                 )
             )
             motion_modules.append(

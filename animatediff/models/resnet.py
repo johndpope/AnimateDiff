@@ -1,4 +1,4 @@
-# Adapted from https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/resnet.py
+# Adapted from https://github.com/guoyww/AnimateDiff
 
 import torch
 import torch.nn as nn
@@ -8,17 +8,6 @@ from einops import rearrange
 
 
 class InflatedConv3d(nn.Conv2d):
-    def forward(self, x):
-        video_length = x.shape[2]
-
-        x = rearrange(x, "b c f h w -> (b f) c h w")
-        x = super().forward(x)
-        x = rearrange(x, "(b f) c h w -> b c f h w", f=video_length)
-
-        return x
-
-
-class InflatedGroupNorm(nn.GroupNorm):
     def forward(self, x):
         video_length = x.shape[2]
 
@@ -123,7 +112,6 @@ class ResnetBlock3D(nn.Module):
         time_embedding_norm="default",
         output_scale_factor=1.0,
         use_in_shortcut=None,
-        use_inflated_groupnorm=False,
     ):
         super().__init__()
         self.pre_norm = pre_norm
@@ -138,11 +126,7 @@ class ResnetBlock3D(nn.Module):
         if groups_out is None:
             groups_out = groups
 
-        assert use_inflated_groupnorm != None
-        if use_inflated_groupnorm:
-            self.norm1 = InflatedGroupNorm(num_groups=groups, num_channels=in_channels, eps=eps, affine=True)
-        else:
-            self.norm1 = torch.nn.GroupNorm(num_groups=groups, num_channels=in_channels, eps=eps, affine=True)
+        self.norm1 = torch.nn.GroupNorm(num_groups=groups, num_channels=in_channels, eps=eps, affine=True)
 
         self.conv1 = InflatedConv3d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
 
@@ -158,11 +142,7 @@ class ResnetBlock3D(nn.Module):
         else:
             self.time_emb_proj = None
 
-        if use_inflated_groupnorm:
-            self.norm2 = InflatedGroupNorm(num_groups=groups_out, num_channels=out_channels, eps=eps, affine=True)
-        else:
-            self.norm2 = torch.nn.GroupNorm(num_groups=groups_out, num_channels=out_channels, eps=eps, affine=True)
-
+        self.norm2 = torch.nn.GroupNorm(num_groups=groups_out, num_channels=out_channels, eps=eps, affine=True)
         self.dropout = torch.nn.Dropout(dropout)
         self.conv2 = InflatedConv3d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
 
@@ -186,7 +166,7 @@ class ResnetBlock3D(nn.Module):
         hidden_states = self.nonlinearity(hidden_states)
 
         hidden_states = self.conv1(hidden_states)
-
+        
         if temb is not None:
             temb = self.time_emb_proj(self.nonlinearity(temb))[:, :, None, None, None]
 
